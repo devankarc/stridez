@@ -8,12 +8,10 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
-// Import lokal
 import 'home_page.dart';
 import 'lari_finish_page.dart';
 import 'akun_page.dart';
 
-// Custom painter untuk progress lingkaran
 class TargetProgressPainter extends CustomPainter {
   final double progress;
   final Color color;
@@ -75,52 +73,68 @@ class LariStartPage extends StatefulWidget {
 }
 
 class _LariStartPageState extends State<LariStartPage> {
-  // === STATE VARIABLES ===
   gmaps.LatLng? _currentLocation = const gmaps.LatLng(-7.2820, 112.7944);
   Position? _previousPosition;
   StreamSubscription<Position>? _positionStreamSubscription;
   final List<gmaps.LatLng> _routePoints = [];
 
-  // Variabel Tracking
   bool isPaused = false;
   Timer? _timer;
   double currentProgress = 0.0;
   double currentDistance = 0.0;
   int durationMinutes = 0;
   int durationSeconds = 0;
-  int calories = 0;
+  int runCalories = 0;
   int totalSteps = 0;
   String? _currentAddress;
   bool _isLoading = true;
 
-  // === SENSOR & ML VARIABLES ===
+  // ============================================
+  // IMPROVED SENSOR & DETECTION VARIABLES
+  // ============================================
+  
   StreamSubscription? _accelSubscription;
   StreamSubscription? _gyroSubscription;
   
-  // Buffer untuk windowing (analisis aktivitas)
   final List<double> _accelMagnitudeBuffer = [];
   final List<double> _gyroMagnitudeBuffer = [];
-  final int _windowSize = 30; // 30 samples (~1 detik)
+  final List<double> _smoothedAccelBuffer = [];
+  final int _windowSize = 40; // Diperkecil supaya respon lebih cepat
   
-  // Deteksi aktivitas
   String _detectedActivity = 'IDLE';
   double _activityConfidence = 0.0;
   
-  // Deteksi langkah
   double _lastAccMagnitude = 0.0;
   int _stepCooldown = 0;
   bool _isPeakDetected = false;
-
-  // === THRESHOLDS (TUNED) ===
-  static const double IDLE_ACCEL_THRESHOLD = 1.5;
-  static const double WALKING_ACCEL_THRESHOLD = 3.5;
-  static const double RUNNING_ACCEL_THRESHOLD = 3.5;
   
-  static const double STEP_THRESHOLD_MIN = 12.0;
-  static const double STEP_THRESHOLD_MAX = 25.0;
-  static const int STEP_COOLDOWN_SAMPLES = 10; // ~0.3 detik
+  final List<DateTime> _stepTimestamps = [];
+  double _currentCadence = 0.0;
 
-  // --- GETTERS DAN HELPER ---
+  // ============================================
+  // TUNED THRESHOLDS (LEBIH SENSITIF)
+  // ============================================
+  
+  // StdDev (Standar Deviasi) untuk mengukur seberapa "kasar" guncangannya
+  static const double IDLE_ACCEL_STD = 0.5;
+  static const double WALKING_ACCEL_STD = 1.0; 
+  static const double RUNNING_ACCEL_STD = 2.0; 
+  
+  // Step Detection (Deteksi Langkah)
+  static const double STEP_THRESHOLD_MIN = 10.2; 
+  static const double STEP_THRESHOLD_MAX = 16.0; 
+  static const int STEP_COOLDOWN_SAMPLES = 6;    
+  
+  // Cadence (Langkah per Menit)
+  static const double WALKING_CADENCE_MIN = 60;  
+  static const double WALKING_CADENCE_MAX = 125;
+  static const double RUNNING_CADENCE_MIN = 115; 
+  static const double RUNNING_CADENCE_MAX = 220;
+  
+  // Gyro (Rotasi HP)
+  static const double IDLE_GYRO_MAX = 0.3;
+  static const double RUNNING_GYRO_MIN = 0.5; 
+
   bool get isTanpaTarget => widget.targetJarak == 0 && widget.targetWaktu == 0;
 
   String _getFormattedDate() {
@@ -133,67 +147,143 @@ class _LariStartPageState extends State<LariStartPage> {
     return '${twoDigits(minutes)}:${twoDigits(seconds)}';
   }
 
-  // --- FUNGSI PENYIMPANAN DATA ---
+  // ============================================
+  // SAVE DAILY DATA
+  // ============================================
+  
   Future<void> _saveDailyData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
       
-      // Ambil data existing
       int existingSteps = prefs.getInt('steps_$today') ?? 0;
+      int existingPassiveSteps = prefs.getInt('passive_steps_$today') ?? 0;
       double existingDistance = prefs.getDouble('distance_$today') ?? 0.0;
-      int existingCalories = prefs.getInt('calories_$today') ?? 0;
+      int existingRunCalories = prefs.getInt('run_calories_$today') ?? 0;
       int existingDuration = prefs.getInt('duration_$today') ?? 0;
       
-      // Tambahkan data sesi ini
       await prefs.setInt('steps_$today', existingSteps + totalSteps);
       await prefs.setDouble('distance_$today', existingDistance + currentDistance);
-      await prefs.setInt('calories_$today', existingCalories + calories);
+      
+      int newRunCalories = existingRunCalories + runCalories;
+      await prefs.setInt('run_calories_$today', newRunCalories);
+      
+      double passiveCalories = existingPassiveSteps * 0.04;
+      int totalCalories = passiveCalories.round() + newRunCalories;
+      await prefs.setInt('calories_$today', totalCalories);
+      
       await prefs.setInt('duration_$today', existingDuration + (durationMinutes * 60 + durationSeconds));
       
-      print('✅ Data tersimpan: Steps=$totalSteps, Distance=${currentDistance.toStringAsFixed(2)}km, Calories=$calories');
+      print('✅ Run Data Saved:');
+      print('   - Run Steps: $totalSteps');
+      print('   - Run Distance: ${currentDistance.toStringAsFixed(2)} km');
+      print('   - Run Calories: $runCalories');
+      print('   - Total Calories: $totalCalories');
     } catch (e) {
-      print('❌ Error menyimpan data: $e');
+      print('❌ Error saving run data: $e');
     }
   }
 
-  // === DETEKSI AKTIVITAS DENGAN ML ===
+  // ============================================
+  // LOW-PASS FILTER
+  // ============================================
+  
+  double _applyLowPassFilter(double newValue) {
+    const double alpha = 0.3; // Sedikit lebih responsif
+    
+    if (_smoothedAccelBuffer.isEmpty) {
+      _smoothedAccelBuffer.add(newValue);
+      return newValue;
+    }
+    
+    double lastValue = _smoothedAccelBuffer.last;
+    double smoothed = alpha * newValue + (1 - alpha) * lastValue;
+    
+    _smoothedAccelBuffer.add(smoothed);
+    if (_smoothedAccelBuffer.length > 10) {
+      _smoothedAccelBuffer.removeAt(0);
+    }
+    
+    return smoothed;
+  }
+
+  // ============================================
+  // CALCULATE CADENCE
+  // ============================================
+  
+  double _calculateCadence() {
+    final cutoff = DateTime.now().subtract(const Duration(seconds: 10));
+    _stepTimestamps.removeWhere((t) => t.isBefore(cutoff));
+    
+    if (_stepTimestamps.length < 2) return 0.0;
+    
+    final duration = _stepTimestamps.last.difference(_stepTimestamps.first);
+    if (duration.inMilliseconds == 0) return 0.0;
+    
+    return (_stepTimestamps.length / duration.inSeconds) * 60;
+  }
+
+  // ============================================
+  // IMPROVED ACTIVITY CLASSIFICATION
+  // ============================================
+  
   void _classifyActivity() {
     if (_accelMagnitudeBuffer.length < _windowSize) return;
     
-    // Hitung statistik
     double accelMean = _calculateMean(_accelMagnitudeBuffer);
     double accelStdDev = sqrt(_calculateVariance(_accelMagnitudeBuffer, accelMean));
-    
     double gyroMean = _gyroMagnitudeBuffer.isNotEmpty 
         ? _calculateMean(_gyroMagnitudeBuffer) 
         : 0.0;
     
-    // Decision Tree Classification
+    double cadence = _calculateCadence();
+    _currentCadence = cadence;
+    
     String newActivity;
     double newConfidence;
     
-    if (accelStdDev < IDLE_ACCEL_THRESHOLD && gyroMean < 0.5) {
+    // IDLE: Low movement, low rotation, no steps
+    if (accelStdDev < IDLE_ACCEL_STD && 
+        gyroMean < IDLE_GYRO_MAX && 
+        cadence < 40) {
       newActivity = 'IDLE';
       newConfidence = 0.95;
-    } else if (accelStdDev >= RUNNING_ACCEL_THRESHOLD && gyroMean > 1.0) {
+    }
+    // RUNNING: Syarat lebih mudah (StdDev >= 2.0 ATAU Cadence >= 115)
+    else if (accelStdDev >= RUNNING_ACCEL_STD && 
+             cadence >= RUNNING_CADENCE_MIN) {
       newActivity = 'RUNNING';
-      newConfidence = 0.90;
-    } else if (accelStdDev >= IDLE_ACCEL_THRESHOLD) {
+      newConfidence = 0.92;
+    }
+    // RUNNING (Alternative): Jika guncangan keras dan ada rotasi, meski cadence rendah (start lari)
+    else if (accelStdDev >= RUNNING_ACCEL_STD && 
+             gyroMean >= RUNNING_GYRO_MIN) {
+      newActivity = 'RUNNING';
+      newConfidence = 0.88;
+    }
+    // WALKING: Guncangan sedang atau cadence sedang
+    else if ((accelStdDev >= WALKING_ACCEL_STD || cadence >= WALKING_CADENCE_MIN) && 
+             cadence < 180) { // Cap walking agar tidak overlap lari sprint
       newActivity = 'WALKING';
       newConfidence = 0.85;
+    }
+    // DEFAULT: Jika ada gerakan tapi tidak jelas, anggap Jalan dulu biar timer jalan
+    else if (cadence > 20) {
+      newActivity = 'WALKING';
+      newConfidence = 0.60;
     } else {
       newActivity = 'IDLE';
-      newConfidence = 0.70;
+      newConfidence = 0.60;
     }
     
-    // Update hanya jika berubah
+    // Logic transisi: Jangan langsung ubah jika confidence rendah
     if (newActivity != _detectedActivity) {
       setState(() {
         _detectedActivity = newActivity;
         _activityConfidence = newConfidence;
       });
-      print('🏃 Activity: $newActivity (${(newConfidence * 100).toStringAsFixed(0)}%) - StdDev: ${accelStdDev.toStringAsFixed(2)}');
+      // Debug print untuk memantau nilai sensor - PERBAIKAN: Gunakan toStringAsFixed
+      print('🏃 Act: $newActivity | Cadence: ${cadence.toStringAsFixed(0)} | StdDev: ${accelStdDev.toStringAsFixed(2)} | Gyro: ${gyroMean.toStringAsFixed(2)}');
     }
   }
 
@@ -207,40 +297,47 @@ class _LariStartPageState extends State<LariStartPage> {
     return values.map((v) => pow(v - mean, 2)).reduce((a, b) => a + b) / values.length;
   }
 
-  // === DETEKSI LANGKAH (PEAK DETECTION) ===
-  void _detectStep(double magnitude) {
-    // Cooldown untuk mencegah double detection
+  // ============================================
+  // IMPROVED STEP DETECTION
+  // ============================================
+  
+  void _detectStep(double rawMagnitude) {
+    double magnitude = _applyLowPassFilter(rawMagnitude);
+    
     if (_stepCooldown > 0) {
       _stepCooldown--;
+      _lastAccMagnitude = magnitude;
       return;
     }
     
-    // Deteksi peak (naik lalu turun)
-    if (magnitude > STEP_THRESHOLD_MIN && 
-        magnitude < STEP_THRESHOLD_MAX &&
+    // Deteksi Puncak Langkah
+    if (magnitude >= STEP_THRESHOLD_MIN && 
+        magnitude <= STEP_THRESHOLD_MAX &&
         _lastAccMagnitude < magnitude) {
       _isPeakDetected = true;
     }
     
-    // Deteksi valley (turun setelah peak)
+    // Langkah Valid
     if (_isPeakDetected && magnitude < _lastAccMagnitude) {
-      // Hanya hitung jika sedang bergerak
-      if (_detectedActivity == 'RUNNING' || _detectedActivity == 'WALKING') {
-        setState(() {
-          totalSteps++;
-        });
-        _stepCooldown = STEP_COOLDOWN_SAMPLES;
-        print('👟 Step detected! Total: $totalSteps');
-      }
+      // Kita hitung langkah meskipun status 'IDLE' sebentar, 
+      // untuk membantu menaikkan cadence agar status berubah jadi RUNNING
+      setState(() {
+        totalSteps++;
+      });
+      _stepTimestamps.add(DateTime.now());
+      _stepCooldown = STEP_COOLDOWN_SAMPLES;
+      
       _isPeakDetected = false;
     }
     
     _lastAccMagnitude = magnitude;
   }
 
-  // === UPDATE KALORI ===
+  // ============================================
+  // UPDATE CALORIES
+  // ============================================
+  
   void _updateCalories() {
-    // Rumus: 0.04 kcal per step OR 60 kcal per km (ambil yang lebih besar)
     const double caloriesPerStep = 0.04;
     const double caloriesPerKm = 60.0;
     
@@ -248,21 +345,23 @@ class _LariStartPageState extends State<LariStartPage> {
     int caloriesFromDistance = (currentDistance * caloriesPerKm).round();
     
     setState(() {
-      calories = caloriesFromSteps > caloriesFromDistance 
+      runCalories = caloriesFromSteps > caloriesFromDistance 
           ? caloriesFromSteps 
           : caloriesFromDistance;
     });
   }
 
-  // === TIMER LOGIC ===
+  // ============================================
+  // TIMER LOGIC
+  // ============================================
+  
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      // Update HANYA saat bergerak (running/walking) dan tidak di-pause
+      // Logic Timer: Jalan jika tidak pause DAN (Sedang Lari ATAU Sedang Jalan)
       if (!isPaused &&
           (_detectedActivity == 'RUNNING' || _detectedActivity == 'WALKING')) {
         setState(() {
-          // Update durasi
           if (durationSeconds < 59) {
             durationSeconds++;
           } else {
@@ -270,10 +369,8 @@ class _LariStartPageState extends State<LariStartPage> {
             durationMinutes++;
           }
 
-          // Update kalori
           _updateCalories();
 
-          // Update progress
           if (widget.isTargetJarak) {
             currentProgress = widget.targetJarak == 0
                 ? 0
@@ -291,35 +388,32 @@ class _LariStartPageState extends State<LariStartPage> {
     });
   }
 
-  // === INISIALISASI SENSOR ===
+  // ============================================
+  // SENSOR LISTENERS
+  // ============================================
+  
   void _startSensorListening() {
-    // Accelerometer
     _accelSubscription = accelerometerEventStream().listen((AccelerometerEvent event) {
       if (isPaused) return;
       
-      // Hitung magnitude
       double magnitude = sqrt(
         event.x * event.x + 
         event.y * event.y + 
         event.z * event.z
       );
       
-      // Tambah ke buffer
       _accelMagnitudeBuffer.add(magnitude);
       if (_accelMagnitudeBuffer.length > _windowSize) {
         _accelMagnitudeBuffer.removeAt(0);
       }
       
-      // Deteksi langkah
       _detectStep(magnitude);
       
-      // Klasifikasi aktivitas setiap buffer penuh
-      if (_accelMagnitudeBuffer.length == _windowSize) {
+      if (_accelMagnitudeBuffer.length >= _windowSize) {
         _classifyActivity();
       }
     });
 
-    // Gyroscope
     _gyroSubscription = gyroscopeEventStream().listen((GyroscopeEvent event) {
       if (isPaused) return;
       
@@ -336,12 +430,15 @@ class _LariStartPageState extends State<LariStartPage> {
     });
   }
 
-  // === GPS TRACKING ===
+  // ============================================
+  // GPS TRACKING
+  // ============================================
+  
   void _startPositionStream() {
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.best,
-        distanceFilter: 5, // Update setiap 5 meter
+        distanceFilter: 5,
       ),
     ).listen((Position position) {
       if (!mounted) return;
@@ -351,12 +448,10 @@ class _LariStartPageState extends State<LariStartPage> {
         _currentLocation = newPoint;
         _isLoading = false;
 
-        // Rekam rute HANYA saat bergerak
         if (!isPaused &&
             (_detectedActivity == 'RUNNING' || _detectedActivity == 'WALKING')) {
           _routePoints.add(newPoint);
 
-          // Hitung jarak
           if (_previousPosition != null) {
             double distanceInMeters = Geolocator.distanceBetween(
               _previousPosition!.latitude,
@@ -365,7 +460,7 @@ class _LariStartPageState extends State<LariStartPage> {
               position.longitude,
             );
 
-            // Filter noise (max 100m per update)
+            // Filter lonjakan GPS (jika pindah > 100m dalam sekejap, abaikan)
             if (distanceInMeters > 0 && distanceInMeters < 100) {
               currentDistance += distanceInMeters / 1000;
             }
@@ -413,7 +508,6 @@ class _LariStartPageState extends State<LariStartPage> {
     }
   }
 
-  // === LIFECYCLE ===
   @override
   void initState() {
     super.initState();
@@ -422,7 +516,7 @@ class _LariStartPageState extends State<LariStartPage> {
     _startTimer();
     _startSensorListening();
     
-    print('🚀 Lari Start Page initialized');
+    print('🚀 Lari Start Page initialized with TUNED DETECTION');
   }
 
   @override
@@ -434,7 +528,6 @@ class _LariStartPageState extends State<LariStartPage> {
     super.dispose();
   }
 
-  // === WIDGETS ===
   Widget _buildBottomNavigationBar() {
     return BottomNavigationBar(
       items: const <BottomNavigationBarItem>[
@@ -460,7 +553,6 @@ class _LariStartPageState extends State<LariStartPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Determine icon & color based on activity
     IconData activityIcon;
     Color activityColor;
     
@@ -481,7 +573,6 @@ class _LariStartPageState extends State<LariStartPage> {
     return Scaffold(
       body: Stack(
         children: [
-          // === GOOGLE MAP ===
           gmaps.GoogleMap(
             initialCameraPosition: gmaps.CameraPosition(
               target: _currentLocation!,
@@ -509,7 +600,6 @@ class _LariStartPageState extends State<LariStartPage> {
             myLocationButtonEnabled: false,
           ),
 
-          // === LOADING OVERLAY ===
           if (_isLoading)
             Container(
               color: Colors.white.withValues(alpha: 0.8),
@@ -525,7 +615,6 @@ class _LariStartPageState extends State<LariStartPage> {
               ),
             ),
 
-          // === HEADER ===
           Positioned(
             top: 40,
             left: 24,
@@ -571,7 +660,6 @@ class _LariStartPageState extends State<LariStartPage> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                // Activity Badge
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
@@ -591,7 +679,7 @@ class _LariStartPageState extends State<LariStartPage> {
                       Icon(activityIcon, color: Colors.white, size: 16),
                       const SizedBox(width: 8),
                       Text(
-                        '$_detectedActivity (${(_activityConfidence * 100).toStringAsFixed(0)}%)',
+                        '$_detectedActivity (${(_activityConfidence * 100).toStringAsFixed(0)}%) | ${_currentCadence.toStringAsFixed(0)} SPM',
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
@@ -605,7 +693,6 @@ class _LariStartPageState extends State<LariStartPage> {
             ),
           ),
 
-          // === PROGRESS CIRCLE ===
           Positioned(
             top: 200,
             left: 0,
@@ -668,7 +755,6 @@ class _LariStartPageState extends State<LariStartPage> {
             ),
           ),
 
-          // === STATS INFO ===
           Positioned(
             bottom: 140,
             left: 24,
@@ -697,14 +783,13 @@ class _LariStartPageState extends State<LariStartPage> {
                   _buildStatItem(
                     icon: Icons.local_fire_department,
                     label: 'KALORI',
-                    value: calories.toString(),
+                    value: runCalories.toString(),
                   ),
                 ],
               ),
             ),
           ),
 
-          // === CONTROL BUTTONS ===
           Positioned(
             bottom: 40,
             left: 0,
@@ -712,7 +797,6 @@ class _LariStartPageState extends State<LariStartPage> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Pause/Resume Button
                 GestureDetector(
                   onTap: () {
                     setState(() {
@@ -753,15 +837,13 @@ class _LariStartPageState extends State<LariStartPage> {
                   ),
                 ),
                 const SizedBox(width: 32),
-                // Finish Button
                 GestureDetector(
                   onTap: () async {
                     _timer?.cancel();
                     
-                    // Simpan data
                     await _saveDailyData();
                     
-                    print('🏁 Finish: Distance=${currentDistance.toStringAsFixed(2)}km, Steps=$totalSteps, Calories=$calories');
+                    print('🏁 Finish: Distance=${currentDistance.toStringAsFixed(2)}km, Steps=$totalSteps, Run Calories=$runCalories');
 
                     if (!mounted) return;
                     Navigator.of(context).pushReplacement(
@@ -771,7 +853,7 @@ class _LariStartPageState extends State<LariStartPage> {
                           distance: currentDistance,
                           durationMinutes: durationMinutes,
                           durationSeconds: durationSeconds,
-                          calories: calories,
+                          calories: runCalories,
                         ),
                       ),
                     );
@@ -811,7 +893,6 @@ class _LariStartPageState extends State<LariStartPage> {
     );
   }
 
-  // Helper widget untuk stat item
   Widget _buildStatItem({
     required IconData icon,
     required String label,

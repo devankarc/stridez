@@ -22,9 +22,10 @@ class _HomePageState extends State<HomePage> {
   
   // === DATA HARIAN ===
   int _todaySteps = 0;
-  int _targetSteps = 10000; // Default awal
+  int _targetSteps = 10000;
   double _todayDistance = 0.0;
-  int _todayCalories = 0;
+  int _todayCalories = 0; // Total kalori (pasif + lari)
+  int _todayPassiveSteps = 0; // Langkah pasif saja (untuk kalkulasi kalori pasif)
   Map<String, int> _weeklySteps = {};
 
   // === VARIABEL SENSOR & DETEKSI LANGKAH ===
@@ -33,26 +34,26 @@ class _HomePageState extends State<HomePage> {
   bool _isPeakDetected = false;
   int _stepCooldown = 0;
 
-  // Setting Sensitivitas
+  // Setting Sensitivitas & Kalori
   static const double STEP_THRESHOLD_MIN = 10.5; 
   static const double STEP_THRESHOLD_MAX = 30.0;
   static const int STEP_COOLDOWN_SAMPLES = 8;
+  static const double PASSIVE_CALORIES_PER_STEP = 0.04; // Kalori realistis per langkah pasif
 
   @override
   void initState() {
     super.initState();
     _loadDisplayName();
     _loadDailyData();     
-    _loadTargetSteps(); // Load target langkah saat aplikasi dibuka
+    _loadTargetSteps();
     _startPassiveStepTracking(); 
   }
 
-  // === PENTING: AGAR TARGET TER-UPDATE SAAT KEMBALI KE HALAMAN INI ===
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _loadDailyData(); 
-    _loadTargetSteps(); // Panggil ini lagi untuk memastikan target terbaru terbaca
+    _loadTargetSteps();
   }
 
   @override
@@ -61,7 +62,6 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  // ... (Fungsi Sensor Pasif tetap sama) ...
   void _startPassiveStepTracking() {
     _accelSubscription = accelerometerEventStream().listen((AccelerometerEvent event) {
       double magnitude = sqrt(
@@ -82,8 +82,14 @@ class _HomePageState extends State<HomePage> {
         if (_isPeakDetected && magnitude < _lastAccMagnitude) {
           setState(() {
             _todaySteps++; 
-            _todayCalories += 1; 
+            _todayPassiveSteps++; // Tambah counter langkah pasif
             _todayDistance += 0.0007; 
+            
+            // Hitung kalori pasif secara akurat
+            int passiveCalories = (_todayPassiveSteps * PASSIVE_CALORIES_PER_STEP).round();
+            
+            // Total kalori = kalori pasif + kalori dari lari (sudah tersimpan)
+            _todayCalories = passiveCalories;
           });
           
           _saveOneStep(); 
@@ -100,9 +106,19 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
     
+    // Simpan langkah total dan langkah pasif terpisah
     await prefs.setInt('steps_$today', _todaySteps);
+    await prefs.setInt('passive_steps_$today', _todayPassiveSteps);
     await prefs.setDouble('distance_$today', _todayDistance);
-    await prefs.setInt('calories_$today', _todayCalories);
+    
+    // Hitung dan simpan total kalori
+    int passiveCalories = (_todayPassiveSteps * PASSIVE_CALORIES_PER_STEP).round();
+    int runCalories = prefs.getInt('run_calories_$today') ?? 0; // Kalori dari lari
+    int totalCalories = passiveCalories + runCalories;
+    
+    await prefs.setInt('calories_$today', totalCalories);
+    
+    print('📊 Passive Step Saved: Total Steps=$_todaySteps, Passive Steps=$_todayPassiveSteps, Passive Cal=$passiveCalories, Run Cal=$runCalories, Total Cal=$totalCalories');
   }
 
   Future<void> _loadDisplayName() async {
@@ -123,11 +139,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // === PERBAIKAN DISINI: LOAD TARGET LANGKAH ===
   Future<void> _loadTargetSteps() async {
     final prefs = await SharedPreferences.getInstance();
-    // Gunakan key 'target_langkah' (sesuai dengan akun_setgoals_page.dart)
-    // Ambil sebagai double, lalu ubah ke int
     double savedTarget = prefs.getDouble('target_langkah') ?? 10000.0;
     
     setState(() {
@@ -141,7 +154,10 @@ class _HomePageState extends State<HomePage> {
     
     setState(() {
       _todaySteps = prefs.getInt('steps_$today') ?? 0;
+      _todayPassiveSteps = prefs.getInt('passive_steps_$today') ?? 0;
       _todayDistance = prefs.getDouble('distance_$today') ?? 0.0;
+      
+      // Load total kalori (pasif + lari)
       _todayCalories = prefs.getInt('calories_$today') ?? 0;
       
       final now = DateTime.now();
@@ -152,12 +168,14 @@ class _HomePageState extends State<HomePage> {
         _weeklySteps[dateStr] = prefs.getInt('steps_$dateStr') ?? 0;
       }
     });
+    
+    print('📱 Data Loaded: Steps=$_todaySteps, Passive Steps=$_todayPassiveSteps, Total Calories=$_todayCalories');
   }
 
   void _onItemTapped(int index) {
     if (index == 0) {
       _loadDailyData();
-      _loadTargetSteps(); // Refresh juga targetnya
+      _loadTargetSteps();
     } else if (index == 1) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (context) => const LariPage()),
@@ -224,7 +242,6 @@ class _HomePageState extends State<HomePage> {
                 _buildWeeklyProgress(),
                 const SizedBox(height: 30),
                 
-                // Target Section
                 Row(
                   children: [
                     Image.asset(
@@ -242,7 +259,6 @@ class _HomePageState extends State<HomePage> {
                             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFFE54721), height: 1.2),
                           ),
                           const SizedBox(height: 8),
-                          // === MENAMPILKAN TARGET DINAMIS ===
                           Text(
                             '${NumberFormat('#,###', 'id_ID').format(_targetSteps)} langkah',
                             style: const TextStyle(fontSize: 15, color: Color(0xFFE54721)),
@@ -254,7 +270,6 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 20),
                 
-                // PROGRESS BAR DENGAN TARGET DINAMIS
                 _buildProgressBar(current: _todaySteps, target: _targetSteps),
                 
                 const SizedBox(height: 30),
@@ -268,7 +283,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ... (Widget Helper WeeklyProgress, ProgressBar, StatsContainer tetap sama) ...
   Widget _buildWeeklyProgress() {
     final now = DateTime.now();
     final monday = now.subtract(Duration(days: now.weekday - 1));
