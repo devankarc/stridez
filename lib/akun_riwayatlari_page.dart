@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:convert'; // DIBUTUHKAN UNTUK JSON
+import 'dart:convert'; 
 
-// --- MODEL DATA (DITAMBAH FUNGSI JSON) ---
+// --- MODEL DATA ---
 class RunRecord {
   final DateTime dateTime;
   final double distance;
@@ -37,16 +37,18 @@ class RunRecord {
     };
   }
 
-  // 2. Mengubah JSON kembali ke Data Asli saat diambil
+  // 2. PERBAIKAN UTAMA DI SINI: Mengubah JSON kembali ke Data Asli
   factory RunRecord.fromMap(Map<String, dynamic> map) {
     return RunRecord(
       dateTime: DateTime.parse(map['dateTime']),
-      distance: map['distance'],
+      // PERBAIKAN: Gunakan (map['...'] as num).toDouble() agar aman
+      distance: (map['distance'] as num).toDouble(), 
       duration: map['duration'],
       pace: map['pace'],
       location: map['location'],
-      isFavorite: map['isFavorite'],
-      calories: map['calories'],
+      isFavorite: map['isFavorite'] ?? false, // Tambah ?? false agar tidak error jika null
+      // PERBAIKAN: Gunakan (map['...'] as num).toInt() agar aman
+      calories: (map['calories'] as num).toInt(), 
     );
   }
 
@@ -72,7 +74,7 @@ class RunRecord {
   }
 }
 
-// --- CLASS STATISTIK (TETAP SAMA) ---
+// --- CLASS STATISTIK ---
 class TotalStats {
   final int totalRuns;
   final double totalDistance;
@@ -85,6 +87,10 @@ class TotalStats {
     final minutes = (totalSeconds / 60).truncate();
     final hours = (minutes / 60).truncate();
     final remainingMinutes = minutes % 60;
+    
+    if (hours == 0 && minutes == 0) {
+      return '< 1m'; // Tampilkan ini jika durasi sangat pendek
+    }
     return '${hours.toString().padLeft(2, '0')}:${remainingMinutes.toString().padLeft(2, '0')}';
   }
 }
@@ -100,7 +106,6 @@ class _AkunRiwayatLariPageState extends State<AkunRiwayatLariPage> {
   String _selectedFilter = 'Semua';
   final DateTime _today = DateTime.now();
   
-  // List ini sekarang kosong di awal, akan diisi dari SharedPreferences
   List<RunRecord> _allRunHistory = [];
   bool _isLoading = true;
 
@@ -108,26 +113,32 @@ class _AkunRiwayatLariPageState extends State<AkunRiwayatLariPage> {
   void initState() {
     super.initState();
     initializeDateFormatting('id_ID', null);
-    _loadRunHistory(); // MEMANGGIL FUNGSI LOAD DATA
+    _loadRunHistory(); 
   }
 
-  // --- LOGIKA LOAD DATA DARI HP ---
+  // --- LOGIKA LOAD DATA ---
   Future<void> _loadRunHistory() async {
     final prefs = await SharedPreferences.getInstance();
-    // Mengambil data string JSON dengan key 'run_history_data'
     final String? runsJson = prefs.getString('run_history_data');
 
     if (runsJson != null) {
-      // Jika ada data, decode JSON menjadi List<RunRecord>
-      final List<dynamic> decodedList = jsonDecode(runsJson);
-      final List<RunRecord> loadedRuns = decodedList.map((item) => RunRecord.fromMap(item)).toList();
+      try {
+        final List<dynamic> decodedList = jsonDecode(runsJson);
+        final List<RunRecord> loadedRuns = decodedList.map((item) => RunRecord.fromMap(item)).toList();
 
-      setState(() {
-        // Sortir dari yang terbaru (descending)
-        loadedRuns.sort((a, b) => b.dateTime.compareTo(a.dateTime));
-        _allRunHistory = loadedRuns;
-        _isLoading = false;
-      });
+        setState(() {
+          // Sortir dari yang terbaru
+          loadedRuns.sort((a, b) => b.dateTime.compareTo(a.dateTime));
+          _allRunHistory = loadedRuns;
+          _isLoading = false;
+        });
+      } catch (e) {
+        print("Error parsing history: $e");
+        setState(() {
+          _allRunHistory = [];
+          _isLoading = false;
+        });
+      }
     } else {
       setState(() {
         _allRunHistory = [];
@@ -169,16 +180,18 @@ class _AkunRiwayatLariPageState extends State<AkunRiwayatLariPage> {
     Duration totalDuration = Duration.zero;
     for (var record in list) {
       final parts = record.duration.split(':');
-      if (parts.length == 2) {
-        final minutes = int.tryParse(parts[0]) ?? 0;
-        final seconds = int.tryParse(parts[1]) ?? 0;
-        totalDuration += Duration(minutes: minutes, seconds: seconds);
-      } else if (parts.length == 3) {
-        final hours = int.tryParse(parts[0]) ?? 0;
-        final minutes = int.tryParse(parts[1]) ?? 0;
-        final seconds = int.tryParse(parts[2]) ?? 0;
-        totalDuration += Duration(hours: hours, minutes: minutes, seconds: seconds);
+      
+      int h = 0, m = 0, s = 0;
+      if (parts.length == 3) {
+        h = int.tryParse(parts[0]) ?? 0;
+        m = int.tryParse(parts[1]) ?? 0;
+        s = int.tryParse(parts[2]) ?? 0;
+      } else if (parts.length == 2) {
+        m = int.tryParse(parts[0]) ?? 0;
+        s = int.tryParse(parts[1]) ?? 0;
       }
+      
+      totalDuration += Duration(hours: h, minutes: m, seconds: s);
     }
     return TotalStats(totalRuns, totalDistance, totalDuration);
   }
@@ -273,7 +286,7 @@ class _AkunRiwayatLariPageState extends State<AkunRiwayatLariPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildMetricItemNew(record.distance.toStringAsFixed(1), 'KM', kmFontSize),
+                _buildMetricItemNew(record.distance.toStringAsFixed(2), 'KM', kmFontSize),
                 _buildMetricItemNew(record.duration, 'WAKTU'),
                 _buildMetricItemNew(record.pace, 'PACE'),
               ],
