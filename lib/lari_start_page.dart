@@ -1,6 +1,7 @@
 import 'package:intl/intl.dart';
 import 'dart:async';
 import 'dart:math';
+import 'dart:convert'; // PENTING: Untuk Encode data ke JSON
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:flutter/material.dart';
@@ -99,7 +100,7 @@ class _LariStartPageState extends State<LariStartPage> {
   final List<double> _accelMagnitudeBuffer = [];
   final List<double> _gyroMagnitudeBuffer = [];
   final List<double> _smoothedAccelBuffer = [];
-  final int _windowSize = 40; // Diperkecil supaya respon lebih cepat
+  final int _windowSize = 40;
   
   String _detectedActivity = 'IDLE';
   double _activityConfidence = 0.0;
@@ -115,23 +116,19 @@ class _LariStartPageState extends State<LariStartPage> {
   // TUNED THRESHOLDS (LEBIH SENSITIF)
   // ============================================
   
-  // StdDev (Standar Deviasi) untuk mengukur seberapa "kasar" guncangannya
   static const double IDLE_ACCEL_STD = 0.5;
   static const double WALKING_ACCEL_STD = 1.0; 
   static const double RUNNING_ACCEL_STD = 2.0; 
   
-  // Step Detection (Deteksi Langkah)
   static const double STEP_THRESHOLD_MIN = 10.2; 
   static const double STEP_THRESHOLD_MAX = 16.0; 
   static const int STEP_COOLDOWN_SAMPLES = 6;    
   
-  // Cadence (Langkah per Menit)
   static const double WALKING_CADENCE_MIN = 60;  
   static const double WALKING_CADENCE_MAX = 125;
   static const double RUNNING_CADENCE_MIN = 115; 
   static const double RUNNING_CADENCE_MAX = 220;
   
-  // Gyro (Rotasi HP)
   static const double IDLE_GYRO_MAX = 0.3;
   static const double RUNNING_GYRO_MIN = 0.5; 
 
@@ -148,7 +145,7 @@ class _LariStartPageState extends State<LariStartPage> {
   }
 
   // ============================================
-  // SAVE DAILY DATA
+  // SAVE DAILY DATA (UNTUK BERANDA)
   // ============================================
   
   Future<void> _saveDailyData() async {
@@ -174,13 +171,63 @@ class _LariStartPageState extends State<LariStartPage> {
       
       await prefs.setInt('duration_$today', existingDuration + (durationMinutes * 60 + durationSeconds));
       
-      print('✅ Run Data Saved:');
-      print('   - Run Steps: $totalSteps');
-      print('   - Run Distance: ${currentDistance.toStringAsFixed(2)} km');
-      print('   - Run Calories: $runCalories');
-      print('   - Total Calories: $totalCalories');
+      print('✅ Daily Data Saved');
     } catch (e) {
-      print('❌ Error saving run data: $e');
+      print('❌ Error saving daily data: $e');
+    }
+  }
+
+  // ============================================
+  // SAVE RUN HISTORY (UNTUK RIWAYAT AKUN) - BARU!
+  // ============================================
+  
+  Future<void> _saveRunHistoryToProfile() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      // 1. Siapkan data Pace
+      String pace = "0:00";
+      if (currentDistance > 0) {
+        double totalMinutes = durationMinutes + (durationSeconds / 60.0);
+        double paceVal = totalMinutes / currentDistance;
+        int paceMin = paceVal.floor();
+        int paceSec = ((paceVal - paceMin) * 60).round();
+        pace = "$paceMin:${paceSec.toString().padLeft(2, '0')}";
+      }
+
+      // 2. Siapkan Lokasi
+      String finalLocation = _currentAddress ?? "Lari Outdoor";
+      if (finalLocation.length > 30) {
+        // Ambil nama kota/daerahnya saja biar tidak kepanjangan
+        List<String> parts = finalLocation.split(',');
+        if (parts.isNotEmpty) finalLocation = parts[0];
+      }
+
+      // 3. Buat Map Data (Sesuai format AkunRiwayatLariPage)
+      Map<String, dynamic> newRunData = {
+        'dateTime': DateTime.now().toIso8601String(),
+        'distance': currentDistance,
+        'duration': _formatDuration(durationMinutes, durationSeconds),
+        'pace': pace,
+        'location': finalLocation,
+        'isFavorite': false, // Default false
+        'calories': runCalories,
+      };
+
+      // 4. Ambil data lama, tambahkan data baru, simpan balik
+      final String? existingData = prefs.getString('run_history_data');
+      List<dynamic> historyList = [];
+      
+      if (existingData != null) {
+        historyList = jsonDecode(existingData);
+      }
+      
+      historyList.add(newRunData);
+      await prefs.setString('run_history_data', jsonEncode(historyList));
+      
+      print('✅ Data Lari Tersimpan ke Riwayat Akun!');
+    } catch (e) {
+      print('❌ Gagal menyimpan riwayat: $e');
     }
   }
 
@@ -189,7 +236,7 @@ class _LariStartPageState extends State<LariStartPage> {
   // ============================================
   
   double _applyLowPassFilter(double newValue) {
-    const double alpha = 0.3; // Sedikit lebih responsif
+    const double alpha = 0.3; 
     
     if (_smoothedAccelBuffer.isEmpty) {
       _smoothedAccelBuffer.add(newValue);
@@ -242,32 +289,27 @@ class _LariStartPageState extends State<LariStartPage> {
     String newActivity;
     double newConfidence;
     
-    // IDLE: Low movement, low rotation, no steps
     if (accelStdDev < IDLE_ACCEL_STD && 
         gyroMean < IDLE_GYRO_MAX && 
         cadence < 40) {
       newActivity = 'IDLE';
       newConfidence = 0.95;
     }
-    // RUNNING: Syarat lebih mudah (StdDev >= 2.0 ATAU Cadence >= 115)
     else if (accelStdDev >= RUNNING_ACCEL_STD && 
              cadence >= RUNNING_CADENCE_MIN) {
       newActivity = 'RUNNING';
       newConfidence = 0.92;
     }
-    // RUNNING (Alternative): Jika guncangan keras dan ada rotasi, meski cadence rendah (start lari)
     else if (accelStdDev >= RUNNING_ACCEL_STD && 
              gyroMean >= RUNNING_GYRO_MIN) {
       newActivity = 'RUNNING';
       newConfidence = 0.88;
     }
-    // WALKING: Guncangan sedang atau cadence sedang
     else if ((accelStdDev >= WALKING_ACCEL_STD || cadence >= WALKING_CADENCE_MIN) && 
-             cadence < 180) { // Cap walking agar tidak overlap lari sprint
+             cadence < 180) { 
       newActivity = 'WALKING';
       newConfidence = 0.85;
     }
-    // DEFAULT: Jika ada gerakan tapi tidak jelas, anggap Jalan dulu biar timer jalan
     else if (cadence > 20) {
       newActivity = 'WALKING';
       newConfidence = 0.60;
@@ -276,13 +318,11 @@ class _LariStartPageState extends State<LariStartPage> {
       newConfidence = 0.60;
     }
     
-    // Logic transisi: Jangan langsung ubah jika confidence rendah
     if (newActivity != _detectedActivity) {
       setState(() {
         _detectedActivity = newActivity;
         _activityConfidence = newConfidence;
       });
-      // Debug print untuk memantau nilai sensor - PERBAIKAN: Gunakan toStringAsFixed
       print('🏃 Act: $newActivity | Cadence: ${cadence.toStringAsFixed(0)} | StdDev: ${accelStdDev.toStringAsFixed(2)} | Gyro: ${gyroMean.toStringAsFixed(2)}');
     }
   }
@@ -310,23 +350,18 @@ class _LariStartPageState extends State<LariStartPage> {
       return;
     }
     
-    // Deteksi Puncak Langkah
     if (magnitude >= STEP_THRESHOLD_MIN && 
         magnitude <= STEP_THRESHOLD_MAX &&
         _lastAccMagnitude < magnitude) {
       _isPeakDetected = true;
     }
     
-    // Langkah Valid
     if (_isPeakDetected && magnitude < _lastAccMagnitude) {
-      // Kita hitung langkah meskipun status 'IDLE' sebentar, 
-      // untuk membantu menaikkan cadence agar status berubah jadi RUNNING
       setState(() {
         totalSteps++;
       });
       _stepTimestamps.add(DateTime.now());
       _stepCooldown = STEP_COOLDOWN_SAMPLES;
-      
       _isPeakDetected = false;
     }
     
@@ -358,7 +393,6 @@ class _LariStartPageState extends State<LariStartPage> {
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      // Logic Timer: Jalan jika tidak pause DAN (Sedang Lari ATAU Sedang Jalan)
       if (!isPaused &&
           (_detectedActivity == 'RUNNING' || _detectedActivity == 'WALKING')) {
         setState(() {
@@ -460,7 +494,6 @@ class _LariStartPageState extends State<LariStartPage> {
               position.longitude,
             );
 
-            // Filter lonjakan GPS (jika pindah > 100m dalam sekejap, abaikan)
             if (distanceInMeters > 0 && distanceInMeters < 100) {
               currentDistance += distanceInMeters / 1000;
             }
@@ -516,7 +549,7 @@ class _LariStartPageState extends State<LariStartPage> {
     _startTimer();
     _startSensorListening();
     
-    print('🚀 Lari Start Page initialized with TUNED DETECTION');
+    print('🚀 Lari Start Page initialized with FULL CONFIG');
   }
 
   @override
@@ -841,8 +874,10 @@ class _LariStartPageState extends State<LariStartPage> {
                   onTap: () async {
                     _timer?.cancel();
                     
+                    // SAVE DATA KE HARIAN & RIWAYAT AKUN
                     await _saveDailyData();
-                    
+                    await _saveRunHistoryToProfile(); 
+
                     print('🏁 Finish: Distance=${currentDistance.toStringAsFixed(2)}km, Steps=$totalSteps, Run Calories=$runCalories');
 
                     if (!mounted) return;

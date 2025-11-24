@@ -1,9 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Asumsi class AccountPage ada di sini jika file akun_page.dart tidak disertakan
-
-
 class AkunSetGoalsPage extends StatefulWidget {
   const AkunSetGoalsPage({super.key});
 
@@ -14,21 +11,58 @@ class AkunSetGoalsPage extends StatefulWidget {
 class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
   // === STATE VARIABLES ===
   String _jenisKelamin = 'Pria';
-  double _tinggiBadan = 170; // cm
-  int _beratBadan = 78; // kg (Ini adalah Berat Badan Awal / Saat Ini)
+  double _tinggiBadan = 170; 
+  int _beratBadan = 78; 
   int _usia = 25;
   
-  // Goals Lari (tidak dikembalikan, hanya untuk kepentingan halaman ini)
-  double _langkahTarget = 8000; // steps
-  double _jarakTarget = 25; // km
-  double _durasiTarget = 60; // menit
-
-  // === WIDGET PEMBANGUN UI KECIL ===
+  // Goals Lari
+  double _langkahTarget = 8000;
+  double _jarakTarget = 25; 
+  double _durasiTarget = 60; 
 
   // Warna dan Konstanta Desain
   static const Color primaryColor = Color.fromARGB(255, 233, 77, 38);
   static const Color secondaryBoxColor = Color.fromARGB(255, 255, 230, 220);
   static const Color darkTextColor = Color.fromARGB(255, 140, 70, 50);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedGoals(); // <--- PENTING: Load data saat halaman dibuka
+  }
+
+  // === FUNGSI LOAD DATA (Agar slider mengingat posisi terakhir) ===
+  Future<void> _loadSavedGoals() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      // Load Target (jika ada, jika tidak pakai default)
+      if (prefs.containsKey('target_langkah')) {
+        _langkahTarget = prefs.getDouble('target_langkah') ?? 8000;
+      }
+      if (prefs.containsKey('target_jarak')) {
+        _jarakTarget = prefs.getDouble('target_jarak') ?? 25;
+      }
+      if (prefs.containsKey('target_durasi')) {
+        _durasiTarget = prefs.getDouble('target_durasi') ?? 60;
+      }
+
+      // Load Data Fisik (Opsional, agar user tidak input ulang terus)
+      if (prefs.containsKey('user_gender')) {
+        _jenisKelamin = prefs.getString('user_gender') ?? 'Pria';
+      }
+      if (prefs.containsKey('user_height')) {
+        _tinggiBadan = prefs.getDouble('user_height') ?? 170;
+      }
+      if (prefs.containsKey('user_weight')) {
+        _beratBadan = prefs.getInt('user_weight') ?? 78;
+      }
+      if (prefs.containsKey('user_age')) {
+        _usia = prefs.getInt('user_age') ?? 25;
+      }
+    });
+  }
+
+  // === WIDGET PEMBANGUN UI KECIL ===
 
   // 1. Tombol Pria/Wanita
   Widget _buildGenderButton(String gender) {
@@ -172,7 +206,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     );
   }
 
-  // WIDGET UTAMA: Kotak Goal Fleksibel (Menggunakan Image.asset untuk semua ikon)
+  // WIDGET UTAMA: Kotak Goal Fleksibel
   Widget _buildGoalBox({
     required String title,
     required String subtitle,
@@ -181,16 +215,14 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     required double min,
     required double max,
     required ValueChanged<double> onChanged,
-    required String assetPath, // Selalu gunakan assetPath
+    required String assetPath,
     required String level1,
     required String level2,
     required String level3,
   }) {
     double levelValue = (max - min) / 3;
-    
     double localValue = value;
     
-    // Tentukan nilai active level
     String getActiveLevel() {
       if (localValue < min + levelValue) return level1;
       if (localValue < max - levelValue * 0.5) return level2;
@@ -232,12 +264,11 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Gunakan Icon sebagai fallback jika assets tidak ada
                   Image.asset(
                     assetPath, 
                     height: 35,
-                    errorBuilder: (context, error, stackTrace) => Icon(
-                      Icons.star, // Ikon fallback
+                    errorBuilder: (context, error, stackTrace) => const Icon(
+                      Icons.star, 
                       color: primaryColor,
                       size: 35,
                     ),
@@ -284,7 +315,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
             value: localValue,
             min: min,
             max: max,
-            divisions: (max - min).toInt() * 2,
+            divisions: (max - min).toInt() * 2, // Agar pergeseran lebih halus (0.5 atau 1)
             activeColor: primaryColor,
             inactiveColor: primaryColor.withOpacity(0.3),
             onChanged: onChanged,
@@ -305,8 +336,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     );
   }
 
-
-  // Widget untuk kotak SET GOALS (tidak berubah)
+  // Widget untuk kotak SET GOALS
   Widget _buildSetGoalsBox() {
     return Container(
       width: double.infinity,
@@ -326,11 +356,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
       child: const Row(
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
-          Icon(
-            Icons.menu, 
-            color: primaryColor, 
-            size: 30,
-          ),
+          Icon(Icons.menu, color: primaryColor, size: 30),
           SizedBox(width: 23),
           Text(
             'SET GOALS',
@@ -346,7 +372,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     );
   }
 
-  // Widget untuk kotak Jenis Kelamin (tidak berubah)
+  // Widget untuk kotak Jenis Kelamin
   Widget _buildJenisKelaminBox() {
     return Container(
       width: double.infinity,
@@ -374,7 +400,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     );
   }
   
-  // WIDGET KONTROL TINGGI BADAN (tidak berubah)
+  // WIDGET KONTROL TINGGI BADAN
   Widget _buildHeightControl() {
     return Container(
       width: double.infinity,
@@ -396,7 +422,6 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Judul "Tinggi Badan"
               const Text(
                 'Tinggi Badan',
                 style: TextStyle(
@@ -405,7 +430,6 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
                   color: darkTextColor,
                 ),
               ),
-              // Nilai Tinggi Badan dan Unit (di pojok kanan atas)
               Text(
                 '${_tinggiBadan.round()} cm',
                 style: const TextStyle(
@@ -416,7 +440,6 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
               ),
             ],
           ),
-          // Slider
           Slider(
             value: _tinggiBadan,
             min: 140,
@@ -435,8 +458,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     );
   }
 
-
-  // WIDGET KONTEN HEADER (tidak berubah)
+  // WIDGET KONTEN HEADER
   Widget _buildScrollableHeader(BuildContext context) {
     const headerDarkTextColor = Color.fromARGB(255, 50, 50, 50);
 
@@ -473,7 +495,6 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
     );
   }
 
-
   @override
   Widget build(BuildContext context) {
     const primaryBackgroundColor = Color.fromARGB(255, 241, 114, 64); 
@@ -488,10 +509,9 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 1. KONTEN HEADER YANG BISA DI-SCROLL
+              // 1. KONTEN HEADER
               _buildScrollableHeader(context), 
               
-              // Jarak ke Kotak Set Goals
               const SizedBox(height: 20.0), 
               
               // 2. KOTAK SET GOALS
@@ -516,7 +536,7 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
               const SizedBox(height: 16),
               _buildHeightControl(),
               
-              // === BERAT BADAN & USIA (Berat Badan ini adalah BB Awal/Saat Ini) ===
+              // === BERAT BADAN & USIA ===
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -584,19 +604,27 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
               ),
               const SizedBox(height: 20),
               
-              // === TOMBOL SIMPAN (LOGIKA BARU) ===
+              // === TOMBOL SIMPAN (LOGIKA LENGKAP) ===
               Container(
                 width: double.infinity,
                 height: 55,
                 margin: const EdgeInsets.only(top: 8, bottom: 24),
                 child: ElevatedButton(
                   onPressed: () async {
-                    // Simpan goals ke SharedPreferences
+                    // Simpan SEMUA data ke SharedPreferences
                     final prefs = await SharedPreferences.getInstance();
+                    
+                    // Simpan Goals
                     await prefs.setDouble('target_langkah', _langkahTarget);
                     await prefs.setDouble('target_jarak', _jarakTarget);
                     await prefs.setDouble('target_durasi', _durasiTarget);
                     
+                    // Simpan Data Fisik (Agar saat dibuka lagi, nilainya tetap sama)
+                    await prefs.setString('user_gender', _jenisKelamin);
+                    await prefs.setDouble('user_height', _tinggiBadan);
+                    await prefs.setInt('user_weight', _beratBadan);
+                    await prefs.setInt('user_age', _usia);
+
                     // Simpan tanggal setting goals hari ini
                     final today = DateTime.now();
                     final todayString = '${today.year}-${today.month}-${today.day}';
@@ -604,10 +632,10 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
                     
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Sasaran disimpan!')),
+                        const SnackBar(content: Text('Semua konfigurasi berhasil disimpan!')),
                       );
                       
-                      // --- LOGIKA MENGEMBALIKAN DATA PENTING KE ACCOUNT PAGE ---
+                      // Kembali dan bawa data terbaru ke halaman akun
                       Navigator.pop(
                           context,
                           {
@@ -617,7 +645,6 @@ class _AkunSetGoalsPageState extends State<AkunSetGoalsPage> {
                           }
                       );
                     }
-                    // =========================================================
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: primaryColor,
