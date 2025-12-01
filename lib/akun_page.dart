@@ -12,6 +12,7 @@ import 'akun_riwayatlari_page.dart';
 import 'akun_profile.dart'; 
 import 'login_page.dart';
 import 'akun_achivement.dart';
+import 'state_sync.dart';
 
 class AccountPage extends StatefulWidget {
   const AccountPage({super.key});
@@ -45,6 +46,41 @@ class _AccountPageState extends State<AccountPage> {
   void initState() {
     super.initState();
     _loadAllUserData(); 
+    // Keep account page in sync with global AppState (runs/calories/duration)
+    AppState.refreshFromPrefs();
+    AppState.totalRuns.addListener(_onTotalRunsChanged);
+    AppState.totalCalories.addListener(_onTotalCaloriesChanged);
+    AppState.totalDurationSeconds.addListener(_onTotalDurationChanged);
+  }
+
+  void _onTotalRunsChanged() {
+    if (!mounted) return;
+    setState(() {
+      _totalRuns = AppState.totalRuns.value;
+    });
+  }
+
+  void _onTotalCaloriesChanged() {
+    if (!mounted) return;
+    setState(() {
+      _totalCalories = AppState.totalCalories.value;
+    });
+  }
+
+  void _onTotalDurationChanged() {
+    if (!mounted) return;
+    int secs = AppState.totalDurationSeconds.value;
+    int hours = secs ~/ 3600;
+    int remainingMin = (secs % 3600) ~/ 60;
+    String timeStr;
+    if (secs > 0 && secs < 60) {
+      timeStr = "< 1m";
+    } else {
+      timeStr = "${hours}j ${remainingMin}m";
+    }
+    setState(() {
+      _totalDurationFormatted = timeStr;
+    });
   }
 
   // ==========================================
@@ -68,6 +104,10 @@ class _AccountPageState extends State<AccountPage> {
 
       // C. Hitung Statistik
       _calculateRunStats(prefs);
+      // Push to AppState so other pages reflect same totals
+      AppState.totalRuns.value = _totalRuns;
+      AppState.totalCalories.value = _totalCalories;
+      // totalDurationSeconds pushed inside _calculateRunStats
       
       _isLoading = false;
     });
@@ -128,6 +168,8 @@ class _AccountPageState extends State<AccountPage> {
       _totalRuns = historyList.length;
       _totalCalories = totalCal;
       _totalDurationFormatted = timeStr;
+      // update AppState duration
+      AppState.totalDurationSeconds.value = totalSeconds;
       
     } else {
       // Jika data kosong
@@ -227,6 +269,14 @@ class _AccountPageState extends State<AccountPage> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
+  }
+
+  @override
+  void dispose() {
+    AppState.totalRuns.removeListener(_onTotalRunsChanged);
+    AppState.totalCalories.removeListener(_onTotalCaloriesChanged);
+    AppState.totalDurationSeconds.removeListener(_onTotalDurationChanged);
+    super.dispose();
   }
 
   @override

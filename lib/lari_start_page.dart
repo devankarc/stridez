@@ -12,6 +12,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'home_page.dart';
 import 'lari_finish_page.dart';
 import 'akun_page.dart';
+import 'state_sync.dart';
 
 class TargetProgressPainter extends CustomPainter {
   final double progress;
@@ -877,6 +878,9 @@ class _LariStartPageState extends State<LariStartPage> {
                     // SAVE DATA KE HARIAN & RIWAYAT AKUN
                     await _saveDailyData();
                     await _saveRunHistoryToProfile(); 
+
+                    // Refresh global shared state so Home/Akun update immediately
+                    await AppState.refreshFromPrefs();
 
                     print('🏁 Finish: Distance=${currentDistance.toStringAsFixed(2)}km, Steps=$totalSteps, Run Calories=$runCalories');
 
